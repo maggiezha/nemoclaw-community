@@ -1266,6 +1266,9 @@ hpa_common_gpu_helm_upgrade() {
   local gpu_target="${7:-40}"
   local inference_model="${8:-llama3.2:3b}"
   local ingress_host="${9:-}"
+  # ollama | vllm | nim — see README runtime comparison table. Defaults to ollama for backward
+  # compatibility with callers that don't pass this optional 10th argument.
+  local inference_runtime="${10:-${INFERENCE_RUNTIME:-ollama}}"
 
   local allow_insecure_http
   allow_insecure_http="$(hpa_common_ingress_allow_insecure_value)"
@@ -1282,6 +1285,7 @@ hpa_common_gpu_helm_upgrade() {
     --set namespace.create=false
     -f "${hpa_values}"
     --set inference.model="${inference_model}"
+    --set inference.runtime="${inference_runtime}"
     --set probes.readinessChecksInference=true
     --set autoscaling.enabled=true
     --set autoscaling.minReplicas="${min}"
@@ -1302,6 +1306,13 @@ hpa_common_gpu_helm_upgrade() {
   fi
   if [[ -n "${NEMOCLAW_TARGET_NODE:-}" ]]; then
     helm_args+=(--set-string "$(hpa_common_target_node_helm_value)")
+  fi
+  # Only relevant when inference_runtime=nim; harmless (ignored by the chart) otherwise.
+  if [[ -n "${NIM_NGC_API_KEY:-}" ]]; then
+    helm_args+=(--set-string "nim.ngcApiKey.value=${NIM_NGC_API_KEY}")
+  fi
+  if [[ -n "${NIM_NGC_API_KEY_SECRET:-}" ]]; then
+    helm_args+=(--set-string "nim.ngcApiKey.existingSecret=${NIM_NGC_API_KEY_SECRET}")
   fi
 
   helm "${helm_args[@]}" >/dev/null

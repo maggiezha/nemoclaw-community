@@ -416,8 +416,104 @@ if ! helm template hostpath-policy-check "${CHART_DIR}" \
   exit 1
 fi
 
+VLLM_RENDERED_FILE="$(mktemp)"
+NIM_RENDERED_FILE="$(mktemp)"
+trap 'rm -f "${TLS_RENDERED_FILE}" "${EIGHT_GPU_RENDERED_FILE}" "${TARGET_NODE_RENDERED_FILE}" "${VLLM_RENDERED_FILE}" "${NIM_RENDERED_FILE}"' EXIT
+
+helm template vllm-runtime-check "${CHART_DIR}" \
+  "${AUTH_HELM_SETS[@]}" \
+  --set ingress.allowInsecureHttp=true \
+  --set inference.runtime=vllm \
+  --set-string inference.model=nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8 \
+  >"${VLLM_RENDERED_FILE}"
+
+helm template nim-runtime-check "${CHART_DIR}" \
+  "${AUTH_HELM_SETS[@]}" \
+  --set ingress.allowInsecureHttp=true \
+  --set inference.runtime=nim \
+  --set-string inference.model=nvidia/nemotron-3-nano \
+  --set-string nim.ngcApiKey.value=test-ngc-key \
+  >"${NIM_RENDERED_FILE}"
+
+python3 - "${VLLM_RENDERED_FILE}" vllm nvcr.io/nvidia/vllm <<'PYEOF'
+import sys
+import yaml
+
+path, runtime, image_repo = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    docs = [d for d in yaml.safe_load_all(f) if d]
+deploy = next(d for d in docs if d.get("kind") == "Deployment")
+containers = deploy["spec"]["template"]["spec"]["containers"]
+runtime_containers = [c for c in containers if c.get("name") == runtime]
+if len(runtime_containers) != 1:
+    sys.exit(f"FAIL: expected exactly one {runtime!r} container, found {len(runtime_containers)}")
+container = runtime_containers[0]
+if not container["image"].startswith(image_repo):
+    sys.exit(f"FAIL: {runtime} container image {container['image']!r} does not start with {image_repo!r}")
+if not any(p.get("name") == "inference" for p in container.get("ports", [])):
+    sys.exit(f"FAIL: {runtime} container does not expose a port named 'inference'")
+metrics_proxy = next(c for c in containers if c["name"] == "metrics-proxy")
+env = {e["name"]: e.get("value") for e in metrics_proxy.get("env", [])}
+if env.get("INFERENCE_RUNTIME") != runtime:
+    sys.exit(f"FAIL: metrics-proxy INFERENCE_RUNTIME={env.get('INFERENCE_RUNTIME')!r}, expected {runtime!r}")
+volumes = deploy["spec"]["template"]["spec"]["volumes"]
+if any(v.get("name") == "scripts" for v in volumes):
+    sys.exit(f"FAIL: {runtime} render should not mount the ollama-only 'scripts' volume")
+print(f"OK: {runtime} render contract holds (container/image/port/metrics-proxy env)")
+PYEOF
+
+python3 - "${NIM_RENDERED_FILE}" <<'PYEOF'
+import sys
+import yaml
+
+with open(sys.argv[1]) as f:
+    docs = [d for d in yaml.safe_load_all(f) if d]
+deploy = next(d for d in docs if d.get("kind") == "Deployment")
+containers = deploy["spec"]["template"]["spec"]["containers"]
+nim_containers = [c for c in containers if c.get("name") == "nim"]
+if len(nim_containers) != 1:
+    sys.exit(f"FAIL: expected exactly one nim container, found {len(nim_containers)}")
+env = {e["name"]: e for e in nim_containers[0].get("env", [])}
+ngc_ref = env.get("NGC_API_KEY", {}).get("valueFrom", {}).get("secretKeyRef", {})
+secret_name = ngc_ref.get("name")
+if not secret_name:
+    sys.exit("FAIL: nim container does not source NGC_API_KEY from a Secret")
+secrets = [d for d in docs if d.get("kind") == "Secret" and d.get("metadata", {}).get("name") == secret_name]
+if len(secrets) != 1:
+    sys.exit(f"FAIL: expected the chart to render the generated NIM NGC Secret {secret_name!r}, found {len(secrets)}")
+print("OK: nim render contract holds (NGC_API_KEY Secret wiring)")
+PYEOF
+
+if BAD_RUNTIME_OUTPUT="$(helm template bad-runtime-check "${CHART_DIR}" \
+  "${AUTH_HELM_SETS[@]}" \
+  --set ingress.allowInsecureHttp=true \
+  --set inference.runtime=bogus 2>&1)"; then
+  echo "FAIL: chart rendered unsupported inference.runtime=bogus" >&2
+  exit 1
+fi
+if [[ "${BAD_RUNTIME_OUTPUT}" != *"unsupported"* ]] || [[ "${BAD_RUNTIME_OUTPUT}" != *"bogus"* ]]; then
+  echo "FAIL: unsupported inference.runtime rejection returned an unexpected error" >&2
+  printf '%s\n' "${BAD_RUNTIME_OUTPUT}" >&2
+  exit 1
+fi
+echo "OK: chart rejects unsupported inference.runtime values"
+
+if NIM_NO_KEY_OUTPUT="$(helm template nim-missing-key-check "${CHART_DIR}" \
+  "${AUTH_HELM_SETS[@]}" \
+  --set ingress.allowInsecureHttp=true \
+  --set inference.runtime=nim 2>&1)"; then
+  echo "FAIL: chart rendered inference.runtime=nim without an NGC API key" >&2
+  exit 1
+fi
+if [[ "${NIM_NO_KEY_OUTPUT}" != *"nim.ngcApiKey"* ]]; then
+  echo "FAIL: missing NIM NGC API key rejection returned an unexpected error" >&2
+  printf '%s\n' "${NIM_NO_KEY_OUTPUT}" >&2
+  exit 1
+fi
+echo "OK: chart requires an NGC API key when inference.runtime=nim"
+
 RENDERED_FILE="$(mktemp)"
-trap 'rm -f "${TLS_RENDERED_FILE}" "${EIGHT_GPU_RENDERED_FILE}" "${TARGET_NODE_RENDERED_FILE}" "${RENDERED_FILE}"' EXIT
+trap 'rm -f "${TLS_RENDERED_FILE}" "${EIGHT_GPU_RENDERED_FILE}" "${TARGET_NODE_RENDERED_FILE}" "${VLLM_RENDERED_FILE}" "${NIM_RENDERED_FILE}" "${RENDERED_FILE}"' EXIT
 # A legacy non-GPU metric-name override must not alter the fixed HPA metric.
 helm template test-release "${CHART_DIR}" \
   "${AUTH_HELM_SETS[@]}" -f "${CHART_DIR}/values.yaml" \
@@ -540,13 +636,13 @@ if deploy:
     if pvc:
         pvc_name = pvc["metadata"]["name"]
         volumes = deploy["spec"]["template"]["spec"]["volumes"]
-        ollama_volumes = [v for v in volumes if v.get("name") == "ollama-data"]
-        if len(ollama_volumes) != 1:
+        inference_volumes = [v for v in volumes if v.get("name") == "inference-data"]
+        if len(inference_volumes) != 1:
             failures.append(
-                f"expected exactly one ollama-data volume, found {len(ollama_volumes)}"
+                f"expected exactly one inference-data volume, found {len(inference_volumes)}"
             )
-        elif ollama_volumes[0].get("persistentVolumeClaim", {}).get("claimName") != pvc_name:
-            failures.append("Deployment ollama-data volume does not reference the rendered PVC")
+        elif inference_volumes[0].get("persistentVolumeClaim", {}).get("claimName") != pvc_name:
+            failures.append("Deployment inference-data volume does not reference the rendered PVC")
 
 if config:
     package_json = config.get("data", {}).get("package.json")
@@ -736,3 +832,7 @@ echo "OK: chart enforces HTTPS redirect, OpenShell HTTP LeastRequest, and extern
 echo "OK: synchronized replica and GPU caps permit an eight-GPU Kubernetes HPA"
 echo "OK: chart requires an explicit ReadWriteMany storage class for shared PVC persistence"
 echo "OK: chart preserves the explicit single-node hostPath persistence mode"
+echo "OK: vllm render contract holds (container/image/port/metrics-proxy env)"
+echo "OK: nim render contract holds (NGC_API_KEY Secret wiring)"
+echo "OK: chart rejects unsupported inference.runtime values"
+echo "OK: chart requires an NGC API key when inference.runtime=nim"

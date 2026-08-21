@@ -5,7 +5,7 @@
 
 # NemoClaw Kubernetes GPU autoscaling
 
-Experimental community recipe: a CPU-only NemoClaw/OpenClaw sandbox (OpenShell) sends inference to authenticated Ollama pods in the same cluster. An HPA scales only those Ollama pods. This recipe’s example signal is per-pod GPU utilization; you can switch the HPA to other or custom metrics. Unsupported / non-production.
+Experimental community recipe: a CPU-only NemoClaw/OpenClaw sandbox (OpenShell) sends inference to authenticated GPU inference pods (Ollama, vLLM, or NVIDIA NIM — see `inference.runtime` in `../README.md#inference-runtimes`) in the same cluster. An HPA scales only those inference pods. This recipe's example signal is per-pod GPU utilization; you can switch the HPA to other or custom metrics. Unsupported / non-production.
 
 **Envoy Gateway is optional.** Use it for LeastRequest across GPU replicas; skip it when the metrics-proxy ClusterIP Service is enough:
 
@@ -24,7 +24,7 @@ Pins in `versions.env`: NemoClaw `v0.0.104`, OpenShell `0.0.85`, Agent Sandbox `
 OpenShell CLI → port-forward → OpenShell gateway → CPU-only NemoClaw sandbox
 ```
 
-Runtime inference path (HPA scales to **N** Ollama pods, 1 GPU each). Envoy is optional: LeastRequest when enabled; metrics-proxy ClusterIP Service when `ENABLE_ENVOY_LB=0`. Set both `MAX_REPLICAS` and `TARGET_PODS` to your allocatable GPU count (**N**) — not fixed to 4.
+Runtime inference path (HPA scales to **N** inference pods, 1 GPU each). Envoy is optional: LeastRequest when enabled; metrics-proxy ClusterIP Service when `ENABLE_ENVOY_LB=0`. Set both `MAX_REPLICAS` and `TARGET_PODS` to your allocatable GPU count (**N**) — not fixed to 4 (or 8 on an 8-GPU node).
 
 ```text
 OpenShell CPU sandbox
@@ -32,15 +32,15 @@ OpenShell CPU sandbox
 Envoy Gateway — LeastRequest  (or metrics-proxy Service when ENABLE_ENVOY_LB=0)
         ↓
 Authenticated inference endpoints
-├─ Ollama pod → GPU 1
-├─ Ollama pod → GPU 2
+├─ Inference pod (ollama|vllm|nim) → GPU 1
+├─ Inference pod (ollama|vllm|nim) → GPU 2
 ├─ …
-└─ Ollama pod → GPU N
+└─ Inference pod (ollama|vllm|nim) → GPU N
         ↑
 HPA (example: GPU utilization)
 ```
 
-**Inference API key.** Chart-generated local Secret for Bearer auth on `/v1/models` and chat completions; users do not supply a cloud key. OpenShell injects it for the sandbox — not for Ollama model pulls, and not OpenAI/`NVIDIA_API_KEY`.
+**Inference API key.** Chart-generated local Secret for Bearer auth on `/v1/models` and chat completions; users do not supply a cloud key. OpenShell injects it for the sandbox — not for the inference runtime's own model pulls (Ollama pulls, vLLM/NIM downloads), and not OpenAI/`NVIDIA_API_KEY`.
 
 **HPA metrics (example).** The shipped path uses GPU utilization:
 
@@ -56,7 +56,7 @@ That is only an example. Point the HPA at other Prometheus Adapter custom metric
 | HPA GPU target (example metric) | `40%` |
 | Ingress host (example) | `nemoclaw.local` |
 
-**Boundaries (short):** namespaces `nemoclaw-gpu` and `nemoclaw-sandboxes`; only Ollama pods request GPUs; Envoy dataplane must stay **ClusterIP** while the OpenShell cleartext HTTP listener exists (`NodePort`/`LoadBalancer` rejected); chart creates **no NetworkPolicy**; installer may touch shared Prometheus, Adapter, Envoy, DCGM ServiceMonitor, MicroK8s add-ons. Validated on one MicroK8s node with 4× L40S — re-validate other hardware.
+**Boundaries (short):** namespaces `nemoclaw-gpu` and `nemoclaw-sandboxes`; only GPU inference pods (ollama|vllm|nim) request GPUs; Envoy dataplane must stay **ClusterIP** while the OpenShell cleartext HTTP listener exists (`NodePort`/`LoadBalancer` rejected); chart creates **no NetworkPolicy**; installer may touch shared Prometheus, Adapter, Envoy, DCGM ServiceMonitor, MicroK8s add-ons. Validated on one MicroK8s node with 4× L40S — re-validate other hardware (e.g. an 8× H100 node).
 
 ## Prerequisites
 

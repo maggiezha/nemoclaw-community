@@ -46,16 +46,20 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
+        {{- $runtime := include "nemoclaw-gpu.runtime" . }}
+        {{- $rt := index .Values $runtime }}
+        {{- $securityContext := index .Values (printf "%sSecurityContext" $runtime) }}
+        {{- if eq $runtime "ollama" }}
         - name: ollama
-          image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}{{ with .Values.ollama.image.digest }}@{{ . }}{{ end }}"
+          image: {{ include "nemoclaw-gpu.imageRef" .Values.ollama.image | quote }}
           imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
-          {{- with .Values.ollamaSecurityContext }}
+          {{- with $securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           command: ["/bin/sh", "/scripts/ollama-start.sh"]
           ports:
-            - name: ollama
+            - name: inference
               containerPort: {{ .Values.ollama.port }}
               protocol: TCP
           env:
@@ -72,14 +76,14 @@ spec:
             - name: scripts
               mountPath: /scripts
               readOnly: true
-            - name: ollama-data
-              mountPath: /root/.ollama
+            - name: inference-data
+              mountPath: {{ include "nemoclaw-gpu.runtimeMountPath" . }}
           resources:
             {{- include "nemoclaw-gpu.ollamaResources" . | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /api/tags
-              port: ollama
+              port: inference
             initialDelaySeconds: 30
             periodSeconds: 20
             timeoutSeconds: 5
@@ -87,13 +91,128 @@ spec:
           readinessProbe:
             httpGet:
               path: /api/tags
-              port: ollama
+              port: inference
             initialDelaySeconds: 15
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 12
+        {{- else if eq $runtime "vllm" }}
+        - name: vllm
+          image: {{ include "nemoclaw-gpu.imageRef" .Values.vllm.image | quote }}
+          imagePullPolicy: {{ .Values.vllm.image.pullPolicy }}
+          {{- with $securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["vllm", "serve"]
+          args:
+            - $(INFERENCE_MODEL)
+            - --host
+            - "0.0.0.0"
+            - --port
+            - {{ .Values.vllm.port | quote }}
+            - --served-model-name
+            - $(INFERENCE_MODEL)
+            - --tensor-parallel-size
+            - {{ .Values.vllm.tensorParallelSize | default 1 | quote }}
+            - --max-model-len
+            - {{ .Values.vllm.maxModelLen | quote }}
+            - --gpu-memory-utilization
+            - {{ .Values.vllm.gpuMemoryUtilization | quote }}
+            {{- range .Values.vllm.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: inference
+              containerPort: {{ .Values.vllm.port }}
+              protocol: TCP
+          env:
+            - name: INFERENCE_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "nemoclaw-gpu.fullname" . }}-metrics-proxy
+                  key: INFERENCE_MODEL
+            - name: HF_HOME
+              value: {{ include "nemoclaw-gpu.runtimeMountPath" . }}
+          volumeMounts:
+            - name: inference-data
+              mountPath: {{ include "nemoclaw-gpu.runtimeMountPath" . }}
+          resources:
+            {{- include "nemoclaw-gpu.ollamaResources" . | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /v1/models
+              port: inference
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: inference
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 12
+        {{- else if eq $runtime "nim" }}
+        {{- if and (not .Values.nim.ngcApiKey.value) (not .Values.nim.ngcApiKey.existingSecret) }}
+        {{- fail "nim.ngcApiKey.value or nim.ngcApiKey.existingSecret is required when inference.runtime=nim" }}
+        {{- end }}
+        - name: nim
+          image: {{ include "nemoclaw-gpu.imageRef" .Values.nim.image | quote }}
+          imagePullPolicy: {{ .Values.nim.image.pullPolicy }}
+          {{- with $securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: inference
+              containerPort: {{ .Values.nim.port }}
+              protocol: TCP
+          env:
+            - name: NGC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.nim.ngcApiKey.existingSecret }}
+                  name: {{ .Values.nim.ngcApiKey.existingSecret | quote }}
+                  key: {{ .Values.nim.ngcApiKey.existingSecretKey | default "NGC_API_KEY" | quote }}
+                  {{- else }}
+                  name: {{ printf "%s-nim-ngc" (include "nemoclaw-gpu.fullname" .) | trunc 63 | trimSuffix "-" | quote }}
+                  key: NGC_API_KEY
+                  {{- end }}
+            - name: NIM_CACHE_PATH
+              value: {{ include "nemoclaw-gpu.runtimeMountPath" . }}
+            - name: NIM_HTTP_API_PORT
+              value: {{ .Values.nim.port | quote }}
+            {{- range .Values.nim.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: inference-data
+              mountPath: {{ include "nemoclaw-gpu.runtimeMountPath" . }}
+          resources:
+            {{- include "nemoclaw-gpu.ollamaResources" . | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /v1/models
+              port: inference
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: inference
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 12
+        {{- end }}
         - name: metrics-proxy
-          image: "{{ .Values.metricsProxy.image.repository }}:{{ .Values.metricsProxy.image.tag }}{{ with .Values.metricsProxy.image.digest }}@{{ . }}{{ end }}"
+          image: {{ include "nemoclaw-gpu.imageRef" .Values.metricsProxy.image | quote }}
           imagePullPolicy: {{ .Values.metricsProxy.image.pullPolicy }}
           {{- with .Values.metricsProxySecurityContext }}
           securityContext:
@@ -117,8 +236,10 @@ spec:
                 configMapKeyRef:
                   name: {{ include "nemoclaw-gpu.fullname" . }}-metrics-proxy
                   key: INFERENCE_MODEL
-            - name: OLLAMA_BASE_URL
-              value: "http://127.0.0.1:{{ .Values.ollama.port }}"
+            - name: INFERENCE_RUNTIME
+              value: {{ $runtime | quote }}
+            - name: INFERENCE_RUNTIME_BASE_URL
+              value: {{ include "nemoclaw-gpu.runtimeRootUrl" . | quote }}
             - name: INFERENCE_AUTH_REQUIRED
               value: {{ .Values.inference.auth.enabled | quote }}
             - name: INFERENCE_API_KEY
@@ -170,6 +291,7 @@ spec:
                 path: metrics-proxy-metrics.ts
               - key: package.json
                 path: package.json
+        {{- if eq $runtime "ollama" }}
         - name: scripts
           configMap:
             name: {{ include "nemoclaw-gpu.fullname" . }}-metrics-proxy
@@ -177,16 +299,17 @@ spec:
               - key: ollama-start.sh
                 path: ollama-start.sh
                 mode: 0755
+        {{- end }}
         - name: tmp
           emptyDir: {}
-        - name: ollama-data
-          {{- if and .Values.ollama.persistence.enabled .Values.ollama.persistence.hostPath }}
+        - name: inference-data
+          {{- if and $rt.persistence.enabled $rt.persistence.hostPath }}
           hostPath:
-            path: {{ .Values.ollama.persistence.hostPath | quote }}
+            path: {{ $rt.persistence.hostPath | quote }}
             type: DirectoryOrCreate
-          {{- else if .Values.ollama.persistence.enabled }}
+          {{- else if $rt.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ include "nemoclaw-gpu.fullname" . }}-ollama
+            claimName: {{ include "nemoclaw-gpu.runtimePvcName" . }}
           {{- else }}
           emptyDir: {}
           {{- end }}

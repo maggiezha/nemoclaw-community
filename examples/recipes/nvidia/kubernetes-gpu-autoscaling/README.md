@@ -5,9 +5,11 @@
 
 # NemoClaw Kubernetes GPU autoscaling
 
-This experimental community recipe demonstrates a cost-efficient architecture that runs a single OpenClaw agent securely inside a CPU-only OpenShell sandbox while independently autoscaling the GPU-backed Ollama model for inference. Because GPU inference is the primary compute and cost bottleneck, Kubernetes HPA dynamically adjusts Ollama capacity from one to multiple replicas as demand changes—maintaining responsiveness during traffic spikes while releasing idle GPU resources when demand falls.
+This experimental community recipe demonstrates a cost-efficient architecture that runs a single OpenClaw agent securely inside a CPU-only OpenShell sandbox while independently autoscaling GPU-backed inference. Because GPU inference is the primary compute and cost bottleneck, Kubernetes HPA dynamically adjusts inference capacity from one to multiple replicas as demand changes—maintaining responsiveness during traffic spikes while releasing idle GPU resources when demand falls.
 
-Kubernetes HPA scales only those Ollama pods (1 GPU each) using a Pods **`AverageValue`** metric (average across Ready pods). Example HPA metrics: **GPU utilization** (scale out when average per-pod util is **above 40%**) and **LLM latency** (scale out when average per-pod latency is **above 3000 ms**).
+The inference container is swappable — **Ollama** (default), **vLLM**, or **NVIDIA NIM** — via `inference.runtime`; see [Inference runtimes](#inference-runtimes). Every runtime keeps the same 1 GPU → 1 pod → local OpenAI-compatible `/v1` server pattern, so the rest of the architecture (metrics-proxy, HPA, Envoy) is unaffected by the choice.
+
+Kubernetes HPA scales only those GPU inference pods (1 GPU each) using a Pods **`AverageValue`** metric (average across Ready pods). Example HPA metrics: **GPU utilization** (scale out when average per-pod util is **above 40%**) and **LLM latency** (scale out when average per-pod latency is **above 3000 ms**).
 
 **Envoy Gateway is optional.** When enabled (default), Envoy sits in front of the GPU replicas and load-balances with **LeastRequest**: each new request is sent to a Ready backend that currently has the fewest outstanding requests, so busy GPUs get less new traffic than idle ones. Skip Envoy when the metrics-proxy ClusterIP Service is enough (round-robin / kube-proxy only — no LeastRequest):
 
@@ -26,9 +28,9 @@ Keep the versions in `versions.env` align with NemoClaw blueprint: NemoClaw `v0.
 OpenShell CLI → port-forward → OpenShell gateway → CPU-only NemoClaw sandbox
 ```
 
-Runtime inference path (HPA scales to **N** Ollama pods, 1 GPU each). Envoy is optional: LeastRequest when enabled; metrics-proxy ClusterIP Service when `ENABLE_ENVOY_LB=0`. Set both `MAX_REPLICAS` and `TARGET_PODS` to your allocatable GPU count (**N**) — not fixed to 4.
+Runtime inference path (HPA scales to **N** inference pods, 1 GPU each). Envoy is optional: LeastRequest when enabled; metrics-proxy ClusterIP Service when `ENABLE_ENVOY_LB=0`. Set both `MAX_REPLICAS` and `TARGET_PODS` to your allocatable GPU count (**N**) — not fixed to 4 (or 8 on an 8-GPU node like `dgx02`; see [Validated hardware](#validated-hardware)).
 
-Each GPU pod is **2/2 Ready** when healthy: container `ollama` (model on GPU) + container `metrics-proxy` (auth, `/v1` proxy, health, Prometheus `/metrics`). The metrics-proxy is **not** the OpenClaw/NemoClaw AI agent — that runs only in the CPU OpenShell sandbox.
+Each GPU pod is **2/2 Ready** when healthy: an inference container (`ollama`, `vllm`, or `nim`, whichever `inference.runtime` selects) + container `metrics-proxy` (auth, `/v1` proxy, health, Prometheus `/metrics`). The metrics-proxy is **not** the OpenClaw/NemoClaw AI agent — that runs only in the CPU OpenShell sandbox.
 
 ```text
 CPU-only OpenShell sandbox (running an OpenClaw agent)
@@ -36,10 +38,10 @@ CPU-only OpenShell sandbox (running an OpenClaw agent)
 Envoy Gateway — LeastRequest  (or metrics-proxy Service when ENABLE_ENVOY_LB=0)
         ↓
 Authenticated inference endpoints
-├─ Ollama pod → GPU 1
-├─ Ollama pod → GPU 2
+├─ Inference pod (ollama|vllm|nim) → GPU 1
+├─ Inference pod (ollama|vllm|nim) → GPU 2
 ├─ …
-└─ Ollama pod → GPU N
+└─ Inference pod (ollama|vllm|nim) → GPU N
         ↑
 HPA (examples: GPU util >40% or latency >3000 ms)
 ```
@@ -78,6 +80,18 @@ Live-tested on [**Brev: AWS Instance**](https://brev.nvidia.com) with a single-n
 <img width="647" height="463" alt="Reference 4× L40S MicroK8s node used for validation" src="https://github.com/user-attachments/assets/80cb397b-d2e3-4b0d-933e-3b8dd1dfdb80" />
 
 **4× L40S is an example platform**, not a hard limit. Set both `MAX_REPLICAS` and `TARGET_PODS` to your allocatable GPU count (**N** — any number you have); install and load-test default to that same N. Covered on the example hardware: chart deploy, optional Envoy LeastRequest, authenticated inference, Kubernetes HPA scale-up when average per-pod **GPU util > 40%** or average per-pod **latency > 3000 ms** (and scale-down after load stops), Envoy distribution across Ready GPU pods, and OpenShell sandbox → `https://inference.local/v1`.
+
+#### 8× H100 example (e.g. `dgx02`) — not yet independently validated
+
+The same pattern is designed to scale to a single 8-GPU DGX-class node with no chart changes — just raise the ceiling. This configuration has not yet been run through the full validation pass above; re-run [Install details](#install-details)'s static checks and the [Test autoscaling](#test-autoscaling-and-load-balancing) steps against your own 8-GPU cluster before relying on it.
+
+```bash
+export MAX_REPLICAS=8   # install-hpa.sh
+export TARGET_PODS=8    # hpa-load-test.sh
+./scripts/install-hpa.sh
+```
+
+`MAX_REPLICAS`/`TARGET_PODS` default to the allocatable GPU count already, so on an 8×H100 node with all GPUs schedulable you can usually omit both and let the scripts detect **N=8** automatically. Any `inference.runtime` (Ollama, vLLM, or NIM — see [Inference runtimes](#inference-runtimes)) works the same way; H100's 80 GB HBM3 comfortably fits every default model in this recipe with headroom to spare.
 
 ## Prerequisites
 
@@ -296,11 +310,47 @@ When Envoy is disabled (`ENABLE_ENVOY_LB=0`): no Gateway objects; clients use th
 
 ### Ollama storage
 
-Default persistence is single-node hostPath in `values.yaml` (`/var/lib/nemoclaw-gpu/ollama`). Multi-node: clear `hostPath` and use RWX StorageClass, or disable persistence (`emptyDir` per pod → re-pull on replace).
+Default persistence is single-node hostPath in `values.yaml` (`/var/lib/nemoclaw-gpu/ollama`). Multi-node: clear `hostPath` and use RWX StorageClass, or disable persistence (`emptyDir` per pod → re-pull on replace). vLLM and NIM use the equivalent `vllm.persistence` / `nim.persistence` blocks with their own default hostPaths (`/var/lib/nemoclaw-gpu/vllm`, `/var/lib/nemoclaw-gpu/nim`).
 
-### Inference models
+### Inference runtimes
 
-**Ollama is an example** in this chart (one OpenAI-compatible server per GPU pod; HPA scales replicas). The recipe default is a **small** model (`llama3.2:3b`) for fast pulls and HPA demos. The same **1 GPU → 1 replica → local `/v1` server** pattern also works for **vLLM** or **NIM** (including a local Nemotron NIM): put that image in the inference container, point `inference.baseUrl` at its in-pod OpenAI port, keep the metrics-proxy as the authenticated front door, and use the same `MAX_REPLICAS` Kubernetes HPA.
+`inference.runtime` (Helm field) / no dedicated env var beyond `INFERENCE_RUNTIME` for the scripts below selects which container the chart renders for GPU inference: **`ollama`** (default), **`vllm`**, or **`nim`**. All three keep the same **1 GPU → 1 pod → local OpenAI-compatible `/v1` server** pattern, so the metrics-proxy, HPA, and Envoy layers are unchanged — only the `values.yaml` block matching the runtime name (`ollama:`, `vllm:`, `nim:`) applies.
+
+| Runtime | Best for | Default model | Image | Min VRAM (default model) |
+|---------|----------|----------------|-------|---------------------------|
+| **Ollama** (default) | Fast pulls, small demo models, simplest quantized-GGUF workflow | `llama3.2:3b` | `ollama/ollama` | ~2 GB |
+| **vLLM** | Higher-throughput OpenAI-compatible serving, Hugging Face model catalog | `nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8` | `nvcr.io/nvidia/vllm` | ~5.3 GB |
+| **NIM** | Prebuilt, NVIDIA-optimized inference microservice, no serving flags to tune | `nvidia/nemotron-3-nano` | `nvcr.io/nim/nvidia/nemotron-3-nano` | ~8 GB |
+
+Every default here fits comfortably on a single L40S (48 GB) or H100 (80 GB) with room for a much larger `inference.maxModelLen`/context if you raise `vllm.maxModelLen` or switch models.
+
+#### Switching runtimes
+
+```bash
+# vLLM — Hugging Face model id as inference.model
+export INFERENCE_RUNTIME=vllm
+export INFERENCE_MODEL=nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8
+./scripts/install-hpa.sh
+
+# NIM — requires an NGC API key (see below)
+export INFERENCE_RUNTIME=nim
+export INFERENCE_MODEL=nvidia/nemotron-3-nano
+export NIM_NGC_API_KEY=nvapi-...
+./scripts/install-hpa.sh
+
+# Sandbox must use the same model id OpenShell will request
+./scripts/create-nemoclaw-sandbox.sh   # recreate if the sandbox already exists
+./scripts/verify-nemoclaw-sandbox.sh
+```
+
+Notes:
+
+- `install-hpa.sh` / `hpa-reset.sh` / `hpa-load-test.sh` all forward `NIM_NGC_API_KEY` (plaintext, `--set-string nim.ngcApiKey.value=...`) or `NIM_NGC_API_KEY_SECRET` (name of a pre-created `Secret` with key `NGC_API_KEY`, `--set-string nim.ngcApiKey.existingSecret=...`) when set. Prefer `NIM_NGC_API_KEY_SECRET` in a real deployment, since plaintext `--set` values are visible in `helm get values` / shell history.
+- vLLM's default `extraArgs` (`--trust-remote-code --async-scheduling --kv-cache-dtype=fp8`) are specific to the Nemotron-3-Nano-4B-FP8 family — clear or replace `vllm.extraArgs` when switching to a different Hugging Face model.
+- NIM env vars (`NGC_API_KEY`, `NIM_CACHE_PATH`, `NIM_HTTP_API_PORT`) follow NVIDIA's generic NIM container contract; verify against the specific NIM image's own docs if you swap in a different catalog entry, and use `nim.extraEnv` for anything image-specific.
+- The `ollama`/`vllm`/`nim` container security contexts are separate values (`ollamaSecurityContext`, `vllmSecurityContext`, `nimSecurityContext`) in case one runtime's image tolerates stricter settings than another.
+
+#### Ollama model tags
 
 Example Ollama tags (any tag that fits GPU memory is fine; recipe default `llama3.2:3b`):
 
@@ -328,7 +378,7 @@ export INFERENCE_MODEL=nemotron-3-nano:30b
 ./scripts/verify-nemoclaw-sandbox.sh
 ```
 
-Helm field: `inference.model` in `values.yaml` / `HPA_VALUES`. Env for scripts: `INFERENCE_MODEL`.
+Helm fields: `inference.runtime` (ollama|vllm|nim) and `inference.model` in `values.yaml` / `HPA_VALUES`. Env for scripts: `INFERENCE_RUNTIME`, `INFERENCE_MODEL`.
 
 ### Kubernetes HPA metrics
 

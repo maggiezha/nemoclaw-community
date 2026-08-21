@@ -34,6 +34,7 @@ MIN_REPLICAS="${MIN_REPLICAS:-1}"
 MAX_REPLICAS="${MAX_REPLICAS:-}"
 GPU_TARGET="${GPU_TARGET:-40}"
 INFERENCE_MODEL="${INFERENCE_MODEL:-llama3.2:3b}"
+INFERENCE_RUNTIME="${INFERENCE_RUNTIME:-ollama}"
 # Preserve a previously configured Ingress host across reset — without this, the helm
 # upgrade below leaves ingress.host unset and Helm falls back to values.yaml's default,
 # silently changing the route clients use to reach the metrics-proxy.
@@ -128,10 +129,12 @@ if [[ "${DELETE_HPA}" == "1" ]]; then
 fi
 
 hpa_common_gpu_helm_upgrade "${RELEASE}" "${CHART_DIR}" "${NAMESPACE}" "${HPA_VALUES}" \
-  "${MIN_REPLICAS}" "${MAX_REPLICAS}" "${GPU_TARGET}" "${INFERENCE_MODEL}" "${INGRESS_HOST}"
+  "${MIN_REPLICAS}" "${MAX_REPLICAS}" "${GPU_TARGET}" "${INFERENCE_MODEL}" "${INGRESS_HOST}" \
+  "${INFERENCE_RUNTIME}"
 
 hpa_common_kick_deployment "${NAMESPACE}" "${DEPLOYMENT}" || hpa_common_gpu_helm_upgrade "${RELEASE}" "${CHART_DIR}" "${NAMESPACE}" "${HPA_VALUES}" \
-  "${MIN_REPLICAS}" "${MAX_REPLICAS}" "${GPU_TARGET}" "${INFERENCE_MODEL}" "${INGRESS_HOST}"
+  "${MIN_REPLICAS}" "${MAX_REPLICAS}" "${GPU_TARGET}" "${INFERENCE_MODEL}" "${INGRESS_HOST}" \
+  "${INFERENCE_RUNTIME}"
 
 hpa_common_verify_hpa_bounds "${NAMESPACE}" "${DEPLOYMENT}" "${HPA_NAME}" "${MIN_REPLICAS}" "${MAX_REPLICAS}" || true
 

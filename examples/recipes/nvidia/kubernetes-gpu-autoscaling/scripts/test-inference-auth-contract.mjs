@@ -65,7 +65,8 @@ const child = spawn(process.execPath, [serverPath], {
     INFERENCE_API_KEY: apiKey,
     INFERENCE_AUTH_REQUIRED: "true",
     INFERENCE_BASE_URL: `http://127.0.0.1:${backendPort}/v1`,
-    OLLAMA_BASE_URL: `http://127.0.0.1:${backendPort}`,
+    INFERENCE_RUNTIME: "ollama",
+    INFERENCE_RUNTIME_BASE_URL: `http://127.0.0.1:${backendPort}`,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

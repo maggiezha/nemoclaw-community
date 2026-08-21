@@ -48,6 +48,9 @@ MIN_REPLICAS="${MIN_REPLICAS:-1}"
 MAX_REPLICAS="${MAX_REPLICAS:-}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-900}"
 INFERENCE_MODEL="${INFERENCE_MODEL:-llama3.2:3b}"
+# ollama | vllm | nim — see README runtime comparison table. Switching runtimes usually also
+# means changing INFERENCE_MODEL to match (e.g. an HF repo id for vllm, a NIM catalog id for nim).
+INFERENCE_RUNTIME="${INFERENCE_RUNTIME:-ollama}"
 GPU_TARGET="${GPU_TARGET:-40}"
 PROM_HELM_TIMEOUT="${PROM_HELM_TIMEOUT:-25m}"
 PROM_VALUES="${PROM_VALUES:-${CHART_DIR}/monitoring/kube-prometheus-microk8s.yaml}"
@@ -61,6 +64,13 @@ case "${INGRESS_SERVICE_TYPE}" in
   ClusterIP | NodePort | LoadBalancer) ;;
   *)
     echo "INGRESS_SERVICE_TYPE must be ClusterIP, NodePort, or LoadBalancer" >&2
+    exit 1
+    ;;
+esac
+case "${INFERENCE_RUNTIME}" in
+  ollama | vllm | nim) ;;
+  *)
+    echo "INFERENCE_RUNTIME must be ollama, vllm, or nim" >&2
     exit 1
     ;;
 esac
@@ -224,7 +234,8 @@ EOF
 
 helm_install() {
   hpa_common_gpu_helm_upgrade "${RELEASE}" "${CHART_DIR}" "${NAMESPACE}" "${HPA_VALUES}" \
-    "${MIN_REPLICAS}" "${MAX_REPLICAS}" "${GPU_TARGET}" "${INFERENCE_MODEL}" "${INGRESS_HOST}"
+    "${MIN_REPLICAS}" "${MAX_REPLICAS}" "${GPU_TARGET}" "${INFERENCE_MODEL}" "${INGRESS_HOST}" \
+    "${INFERENCE_RUNTIME}"
 }
 
 if command -v microk8s >/dev/null 2>&1; then

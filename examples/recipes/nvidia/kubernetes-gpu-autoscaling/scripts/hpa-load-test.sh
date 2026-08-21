@@ -112,6 +112,7 @@ if ! hpa_common_ensure_metrics_proxy_ready "${NAMESPACE}" "${RELEASE}" "${CHART_
 fi
 
 INFERENCE_MODEL="${INFERENCE_MODEL:-llama3.2:3b}"
+INFERENCE_RUNTIME="${INFERENCE_RUNTIME:-ollama}"
 HPA_HELM_ARGS=(
   upgrade --install "${RELEASE}" "${CHART_DIR}"
   --namespace "${NAMESPACE}"
@@ -119,6 +120,7 @@ HPA_HELM_ARGS=(
   --set namespace.create=false
   -f "${HPA_VALUES}"
   --set inference.model="${INFERENCE_MODEL}"
+  --set inference.runtime="${INFERENCE_RUNTIME}"
   --set probes.readinessChecksInference=true
   --set autoscaling.enabled=true
   --set autoscaling.minReplicas=1
@@ -134,6 +136,12 @@ HPA_HELM_ARGS=(
 )
 if [[ -n "${NEMOCLAW_TARGET_NODE:-}" ]]; then
   HPA_HELM_ARGS+=(--set-string "$(hpa_common_target_node_helm_value)")
+fi
+if [[ -n "${NIM_NGC_API_KEY:-}" ]]; then
+  HPA_HELM_ARGS+=(--set-string "nim.ngcApiKey.value=${NIM_NGC_API_KEY}")
+fi
+if [[ -n "${NIM_NGC_API_KEY_SECRET:-}" ]]; then
+  HPA_HELM_ARGS+=(--set-string "nim.ngcApiKey.existingSecret=${NIM_NGC_API_KEY_SECRET}")
 fi
 helm "${HPA_HELM_ARGS[@]}" >/dev/null
 
@@ -155,14 +163,14 @@ hpa_common_verify_hpa_bounds "${NAMESPACE}" "${DEPLOYMENT}" "${DEPLOYMENT}" 1 "$
 hpa_common_wait_rollout "${DEPLOYMENT}" "${NAMESPACE}" "${ROLLOUT_TIMEOUT}"
 hpa_common_print_hpa "${NAMESPACE}"
 
-# Ensure metrics-proxy pods are Ready (Ollama loaded) before load starts.
+# Ensure metrics-proxy pods are Ready (inference model loaded) before load starts.
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=nemoclaw-gpu,component=gpu-metrics-proxy \
   -n "${NAMESPACE}" --timeout=600s >/dev/null 2>&1 || {
   echo "metrics-proxy pods not Ready — run ./scripts/hpa-reset.sh then retry" >&2
   exit 1
 }
 
-# Wait for inference ready (Ollama model loaded) before starting load Job.
+# Wait for inference ready (runtime model loaded) before starting load Job.
 hpa_common_log "Waiting for metrics-proxy /readyz (model loaded)..."
 READY_OK=0
 for _ in $(seq 1 60); do
@@ -177,7 +185,7 @@ for _ in $(seq 1 60); do
   sleep 3
 done
 if [[ "${READY_OK}" -ne 1 ]]; then
-  echo "metrics-proxy /readyz not stable — Ollama may still be pulling the model. Run ./scripts/hpa-reset.sh then retry" >&2
+  echo "metrics-proxy /readyz not stable — the inference runtime may still be pulling the model. Run ./scripts/hpa-reset.sh then retry" >&2
   exit 1
 fi
 
