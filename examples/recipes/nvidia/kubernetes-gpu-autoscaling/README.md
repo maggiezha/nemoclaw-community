@@ -5,9 +5,9 @@
 
 # NemoClaw Kubernetes GPU autoscaling
 
-This experimental community recipe demonstrates a cost-efficient architecture that runs a single OpenClaw agent securely inside a CPU-only OpenShell sandbox while independently autoscaling GPU-backed inference. Because GPU inference is the primary compute and cost bottleneck, Kubernetes HPA dynamically adjusts inference capacity from one to multiple replicas as demand changes—maintaining responsiveness during traffic spikes while releasing idle GPU resources when demand falls.
+This experimental community recipe demonstrates a cost-efficient architecture that runs a single AI agent securely inside a CPU-only OpenShell sandbox while independently autoscaling GPU-backed inference. Because GPU inference is the primary compute and cost bottleneck, Kubernetes HPA dynamically adjusts inference capacity from one to multiple replicas as demand changes—maintaining responsiveness during traffic spikes while releasing idle GPU resources when demand falls.
 
-The inference container is swappable — **Ollama** (default), **vLLM**, or **NVIDIA NIM** — via `inference.runtime`; see [Inference runtimes](#inference-runtimes). Every runtime keeps the same 1 GPU → 1 pod → local OpenAI-compatible `/v1` server pattern, so the rest of the architecture (metrics-proxy, HPA, Envoy) is unaffected by the choice.
+The sandboxed agent is swappable — **OpenClaw** (default), **Hermes**, or **Deep Agents Code** — see [`agents/`](agents/). The inference container is also swappable — **Ollama** (default), **vLLM**, or **NVIDIA NIM** — via `inference.runtime`; see [Inference runtimes](#inference-runtimes). Every combination keeps the same 1 GPU → 1 pod → local OpenAI-compatible `/v1` server pattern, so the rest of the architecture (metrics-proxy, HPA, Envoy) is unaffected by either choice.
 
 Kubernetes HPA scales only those GPU inference pods (1 GPU each) using a Pods **`AverageValue`** metric (average across Ready pods). Example HPA metrics: **GPU utilization** (scale out when average per-pod util is **above 40%**) and **LLM latency** (scale out when average per-pod latency is **above 3000 ms**).
 
@@ -30,10 +30,10 @@ OpenShell CLI → port-forward → OpenShell gateway → CPU-only NemoClaw sandb
 
 Runtime inference path (HPA scales to **N** inference pods, 1 GPU each). Envoy is optional: LeastRequest when enabled; metrics-proxy ClusterIP Service when `ENABLE_ENVOY_LB=0`. Set both `MAX_REPLICAS` and `TARGET_PODS` to your allocatable GPU count (**N**) — not fixed to 4 (or 8 on an 8-GPU node like `dgx02`; see [Validated hardware](#validated-hardware)).
 
-Each GPU pod is **2/2 Ready** when healthy: an inference container (`ollama`, `vllm`, or `nim`, whichever `inference.runtime` selects) + container `metrics-proxy` (auth, `/v1` proxy, health, Prometheus `/metrics`). The metrics-proxy is **not** the OpenClaw/NemoClaw AI agent — that runs only in the CPU OpenShell sandbox.
+Each GPU pod is **2/2 Ready** when healthy: an inference container (`ollama`, `vllm`, or `nim`, whichever `inference.runtime` selects) + container `metrics-proxy` (auth, `/v1` proxy, health, Prometheus `/metrics`). The metrics-proxy is **not** the sandboxed AI agent — that runs only in the CPU OpenShell sandbox (see [`agents/`](agents/) for OpenClaw / Hermes / Deep Agents Code).
 
 ```text
-CPU-only OpenShell sandbox (running an OpenClaw agent)
+CPU-only OpenShell sandbox (running one of agents/openclaw, agents/hermes, agents/langchain-deepagents-code)
         ↓
 Envoy Gateway — LeastRequest  (or metrics-proxy Service when ENABLE_ENVOY_LB=0)
         ↓
@@ -170,9 +170,11 @@ kubectl apply -f \
 
 # MicroK8s local registry (validated path) — see [MicroK8s local registry](#microk8s-local-registry)
 microk8s enable registry   # if not already on
-export NEMOCLAW_SANDBOX_IMAGE=localhost:32000/nemoclaw-k8s:${NEMOCLAW_VERSION}
-# Or any registry nodes can pull: export NEMOCLAW_SANDBOX_IMAGE=registry.example.com/team/nemoclaw-k8s:v0.0.104
-./scripts/build-nemoclaw-sandbox-image.sh
+export NEMOCLAW_SANDBOX_IMAGE=localhost:32000/nemoclaw-openclaw-k8s:${NEMOCLAW_VERSION}
+# Or any registry nodes can pull: export NEMOCLAW_SANDBOX_IMAGE=registry.example.com/team/nemoclaw-openclaw-k8s:v0.0.104
+./agents/openclaw/build-sandbox-image.sh
+# Hermes or Deep Agents Code instead of OpenClaw? See agents/README.md — same steps,
+# different agents/<name>/ folder and *_SANDBOX_IMAGE env var.
 
 export OPENSHELL_OIDC_ISSUER=https://idp.example.com/realms/openshell
 export OPENSHELL_OIDC_AUDIENCE=openshell-cli
@@ -189,14 +191,14 @@ Terminal 1 — keep running:
 kubectl -n nemoclaw-sandboxes port-forward service/openshell 8080:8080
 ```
 
-Terminal 2 — client TLS + gateway (OIDC flags in [OpenShell details](#openshell-details)), then:
+Terminal 2 — client TLS + gateway (OIDC flags in [OpenShell details](#openshell-details)), then (OpenClaw shown; see [`agents/`](agents/) for Hermes / Deep Agents Code):
 
 ```bash
-export NEMOCLAW_SANDBOX_IMAGE=localhost:32000/nemoclaw-k8s:${NEMOCLAW_VERSION}
+export NEMOCLAW_SANDBOX_IMAGE=localhost:32000/nemoclaw-openclaw-k8s:${NEMOCLAW_VERSION}
 export INFERENCE_MODEL=llama3.2:3b   # must match the GPU chart model
-./scripts/create-nemoclaw-sandbox.sh
-./scripts/verify-nemoclaw-sandbox.sh   # example: "In one sentence, what is an AI agent sandbox?" — see [Example test](#example-test)
-./scripts/run-nemoclaw-sandbox.sh   # keep in foreground
+./agents/openclaw/create-sandbox.sh
+./agents/openclaw/verify-sandbox.sh   # example: "In one sentence, what is an AI agent sandbox?" — see [Example test](#example-test)
+./agents/openclaw/run-sandbox.sh   # keep in foreground
 ```
 
 Users do not paste an inference API key; the chart generates it and OpenShell injects Bearer auth.
@@ -338,9 +340,9 @@ export INFERENCE_MODEL=nvidia/nemotron-3-nano
 export NIM_NGC_API_KEY=nvapi-...
 ./scripts/install-hpa.sh
 
-# Sandbox must use the same model id OpenShell will request
-./scripts/create-nemoclaw-sandbox.sh   # recreate if the sandbox already exists
-./scripts/verify-nemoclaw-sandbox.sh
+# Sandbox must use the same model id OpenShell will request (OpenClaw shown; see agents/)
+./agents/openclaw/create-sandbox.sh   # recreate if the sandbox already exists
+./agents/openclaw/verify-sandbox.sh
 ```
 
 Notes:
@@ -372,10 +374,10 @@ export INFERENCE_MODEL=llama3.2:3b
 export INFERENCE_MODEL=nemotron-3-nano:30b
 ./scripts/install-hpa.sh
 
-# Sandbox must use the same model id OpenShell will request
+# Sandbox must use the same model id OpenShell will request (OpenClaw shown; see agents/)
 export INFERENCE_MODEL=nemotron-3-nano:30b
-./scripts/create-nemoclaw-sandbox.sh   # recreate if the sandbox already exists
-./scripts/verify-nemoclaw-sandbox.sh
+./agents/openclaw/create-sandbox.sh   # recreate if the sandbox already exists
+./agents/openclaw/verify-sandbox.sh
 ```
 
 Helm fields: `inference.runtime` (ollama|vllm|nim) and `inference.model` in `values.yaml` / `HPA_VALUES`. Env for scripts: `INFERENCE_RUNTIME`, `INFERENCE_MODEL`.
@@ -435,10 +437,10 @@ Ports (do not mix them up):
 
 ### From the OpenShell sandbox (recommended)
 
-With the OpenShell port-forward on **8080** running and sandbox `nemoclaw-onprem` Ready:
+With the OpenShell port-forward on **8080** running and sandbox `nemoclaw-onprem` Ready (OpenClaw shown; Hermes and Deep Agents Code use `agents/hermes/` / `agents/langchain-deepagents-code/` — see [`agents/`](agents/)):
 
 ```bash
-./scripts/verify-nemoclaw-sandbox.sh
+./agents/openclaw/verify-sandbox.sh
 ```
 
 Example printout:
@@ -452,7 +454,7 @@ models: llama3.2:3b
 [verify] Answer: An AI agent sandbox is a simulated environment where an AI agent
 can interact and learn in a safe, controlled space.
 OK: sandbox nemoclaw-onprem reached https://inference.local for models and chat/completions (llama3.2:3b).
-Runtime (optional foreground): ./scripts/run-nemoclaw-sandbox.sh
+Runtime (optional foreground): ./agents/openclaw/run-sandbox.sh
 ```
 
 Exact assistant wording varies by model and sampling; a non-empty answer plus the final `OK:` line means the example path passed. Small models (for example `llama3.2:3b`) may not know product-specific names like “NemoClaw”.
@@ -502,19 +504,19 @@ microk8s enable registry
 # ["localhost:32000","127.0.0.1:32000"] — then restart Docker).
 
 source versions.env
-export NEMOCLAW_SANDBOX_IMAGE=localhost:32000/nemoclaw-k8s:${NEMOCLAW_VERSION}
-./scripts/build-nemoclaw-sandbox-image.sh
+export NEMOCLAW_SANDBOX_IMAGE=localhost:32000/nemoclaw-openclaw-k8s:${NEMOCLAW_VERSION}
+./agents/openclaw/build-sandbox-image.sh
 
 # If a node cannot pull, pre-load into containerd:
 # microk8s ctr images pull --plain-http "${NEMOCLAW_SANDBOX_IMAGE}"
 ```
 
-Use the same `NEMOCLAW_SANDBOX_IMAGE` for `create-nemoclaw-sandbox.sh`. Any other registry works the same way if every node can pull the tag (private registry credentials are outside this recipe).
+Use the same `NEMOCLAW_SANDBOX_IMAGE` for `agents/openclaw/create-sandbox.sh`. Any other registry works the same way if every node can pull the tag (private registry credentials are outside this recipe). Hermes / Deep Agents Code use `HERMES_SANDBOX_IMAGE` / `DEEPAGENTS_SANDBOX_IMAGE` and their own `agents/<name>/` scripts — see [`agents/`](agents/).
 
 ### Gateway and sandbox
 
 - Agent Sandbox CRDs are cluster-scoped; `install-openshell-k8s.sh` never installs them — apply the pinned manifest yourself.
-- Build image: `NEMOCLAW_SANDBOX_IMAGE=… ./scripts/build-nemoclaw-sandbox-image.sh` (versioned, non-`latest` tag; no API key in the image). Prefer [MicroK8s local registry](#microk8s-local-registry) on MicroK8s.
+- Build image (OpenClaw shown; see [`agents/`](agents/) for Hermes / Deep Agents Code): `NEMOCLAW_SANDBOX_IMAGE=… ./agents/openclaw/build-sandbox-image.sh` (versioned, non-`latest` tag; no API key in the image). Prefer [MicroK8s local registry](#microk8s-local-registry) on MicroK8s.
 - OIDC is default. Unauthenticated mode is dedicated-cluster + port-forward only (`ALLOW_UNAUTHENTICATED_OPENSHELL=1` + ACK). ClusterIP does not isolate from other pods/users.
 - Client mTLS after port-forward:
 
@@ -535,8 +537,8 @@ openshell gateway add https://127.0.0.1:8080 \
 openshell status
 ```
 
-- `create-nemoclaw-sandbox.sh` stores the chart inference key in the OpenShell provider, strips `integrate.api.nvidia.com` from policy, and runs an example chat (`In one sentence, what is an AI agent sandbox?`).
-- OpenShell `0.0.85` leaves sandboxes idle (`sleep infinity`); `run-nemoclaw-sandbox.sh` must stay attached and does not auto-restart. Combined topology may require powerful capabilities (`SYS_ADMIN`, `NET_ADMIN`, …) — check admission policy.
+- `agents/<name>/create-sandbox.sh` stores the chart inference key in the OpenShell provider, strips `integrate.api.nvidia.com` from policy (where the agent's upstream policy grants it — see [`agents/README.md`](agents/README.md#shared-policy-notes)), and runs an example chat (`In one sentence, what is an AI agent sandbox?`).
+- OpenShell `0.0.85` leaves sandboxes idle (`sleep infinity`); `agents/openclaw/run-sandbox.sh` (or `agents/hermes/run-sandbox.sh`) must stay attached and does not auto-restart — Deep Agents Code has no such gateway to keep running (see [`agents/`](agents/)). Combined topology may require powerful capabilities (`SYS_ADMIN`, `NET_ADMIN`, …) — check admission policy.
 
 ## Test autoscaling and load balancing
 
@@ -642,10 +644,12 @@ After scale-up you should see multiple pod series. metrics-proxy `/metrics` scra
 | `install-hpa.sh` | Monitoring + chart + HPA (+ Envoy if enabled) |
 | `hpa-load-test.sh` / `hpa-reset.sh` | Autoscaling (+ Envoy) test / restore idle |
 | `get-metrics-proxy-pods.sh` / `get-hpa.sh` / `hpa-watch.sh` | Inspect / watch |
-| `build-nemoclaw-sandbox-image.sh` | Build/push sandbox image |
 | `install-openshell-k8s.sh` | OpenShell gateway |
-| `create-nemoclaw-sandbox.sh` / `verify-nemoclaw-sandbox.sh` / `run-nemoclaw-sandbox.sh` | Sandbox lifecycle |
 | `test-*-contract.*` | Static / local contract checks |
+
+Sandbox agent lifecycle scripts (build/create/verify/run) moved to
+[`agents/<name>/`](agents/) — one folder per agent (`openclaw`, `hermes`,
+`langchain-deepagents-code`), mirroring [`NVIDIA/NemoClaw/agents`](https://github.com/NVIDIA/NemoClaw/tree/main/agents). See [`agents/README.md`](agents/README.md) for the full script list and per-agent env vars.
 
 
 ### Upgrade from pre-metrics-proxy releases
@@ -656,7 +660,7 @@ Older chart revisions misnamed the GPU front door Deployment/Service/HPA/Gateway
 
 ## Uninstall
 
-Stop `run-nemoclaw-sandbox.sh`. With OpenShell port-forward still up:
+Stop the running agent (`agents/openclaw/run-sandbox.sh`, `agents/hermes/run-sandbox.sh`; Deep Agents Code exits after each `run-prompt.sh` call). With OpenShell port-forward still up (substitute your agent's sandbox/provider name — `nemoclaw-onprem`/`onprem-ollama` for OpenClaw, `hermes-onprem`/`onprem-hermes` for Hermes, `deepagents-onprem`/`onprem-deepagents` for Deep Agents Code):
 
 ```bash
 openshell sandbox delete nemoclaw-onprem

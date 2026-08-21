@@ -2,14 +2,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Build a deployment-specific NemoClaw/OpenClaw image and push it to a registry that
-# the remote OpenShell Kubernetes gateway can pull. No inference API key enters the image.
+# Build a deployment-specific NemoClaw/Deep Agents Code image and push it to a registry
+# that the remote OpenShell Kubernetes gateway can pull. No inference API key enters the
+# image. Mirrors ../openclaw/build-sandbox-image.sh; see
+# agents/langchain-deepagents-code/Dockerfile upstream.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-# shellcheck source=../versions.env
+CHART_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=../../versions.env
 source "${CHART_DIR}/versions.env"
 
 fail() {
@@ -25,7 +27,7 @@ require_cmd docker
 require_cmd git
 require_cmd sed
 
-SANDBOX_IMAGE="${NEMOCLAW_SANDBOX_IMAGE:-}"
+SANDBOX_IMAGE="${DEEPAGENTS_SANDBOX_IMAGE:-}"
 MODEL="${INFERENCE_MODEL:-llama3.2:3b}"
 PLATFORM="${NEMOCLAW_IMAGE_PLATFORM:-linux/amd64}"
 IMAGE_NAME="${SANDBOX_IMAGE##*/}"
@@ -35,15 +37,15 @@ IMAGE_NAME="${SANDBOX_IMAGE##*/}"
 [[ "${OPENSHELL_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || fail "versions.env contains an invalid OPENSHELL_VERSION"
 [[ -n "${SANDBOX_IMAGE}" ]] \
-  || fail "set NEMOCLAW_SANDBOX_IMAGE to a registry image with a non-latest tag"
+  || fail "set DEEPAGENTS_SANDBOX_IMAGE to a registry image with a non-latest tag"
 [[ "${SANDBOX_IMAGE}" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]+$ ]] \
-  || fail "NEMOCLAW_SANDBOX_IMAGE contains unsupported characters"
+  || fail "DEEPAGENTS_SANDBOX_IMAGE contains unsupported characters"
 [[ "${SANDBOX_IMAGE}" == */* ]] \
-  || fail "NEMOCLAW_SANDBOX_IMAGE must include a registry/repository path"
+  || fail "DEEPAGENTS_SANDBOX_IMAGE must include a registry/repository path"
 [[ "${SANDBOX_IMAGE}" != *@* && "${IMAGE_NAME}" == *:* ]] \
-  || fail "NEMOCLAW_SANDBOX_IMAGE must be a tagged build target, not a digest"
+  || fail "DEEPAGENTS_SANDBOX_IMAGE must be a tagged build target, not a digest"
 [[ "${SANDBOX_IMAGE}" != *:latest ]] \
-  || fail "NEMOCLAW_SANDBOX_IMAGE must not use the mutable latest tag"
+  || fail "DEEPAGENTS_SANDBOX_IMAGE must not use the mutable latest tag"
 [[ "${PLATFORM}" == "linux/amd64" || "${PLATFORM}" == "linux/arm64" ]] \
   || fail "NEMOCLAW_IMAGE_PLATFORM must be linux/amd64 or linux/arm64"
 [[ "${MODEL}" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || fail "INFERENCE_MODEL is invalid"
@@ -67,6 +69,10 @@ find "${SOURCE_DIR}" -type d -exec chmod 755 {} +
 find "${SOURCE_DIR}" -type f ! -perm /111 -exec chmod 644 {} +
 find "${SOURCE_DIR}" -type f -perm /111 -exec chmod 755 {} +
 
+DEEPAGENTS_DOCKERFILE="${SOURCE_DIR}/agents/langchain-deepagents-code/Dockerfile"
+[[ -f "${DEEPAGENTS_DOCKERFILE}" ]] \
+  || fail "NemoClaw ${NEMOCLAW_VERSION} is missing agents/langchain-deepagents-code/Dockerfile"
+
 BLUEPRINT="${SOURCE_DIR}/nemoclaw-blueprint/blueprint.yaml"
 [[ -f "${BLUEPRINT}" ]] || fail "NemoClaw release is missing its blueprint"
 BLUEPRINT_MIN="$(sed -nE 's/^min_openshell_version:[[:space:]]*"([0-9.]+)"/\1/p' "${BLUEPRINT}")"
@@ -82,9 +88,9 @@ docker buildx build \
   --provenance=true \
   --sbom=true \
   --tag "${SANDBOX_IMAGE}" \
-  --build-arg "BASE_IMAGE=ghcr.io/nvidia/nemoclaw/sandbox-base:${NEMOCLAW_VERSION}" \
+  --file "${DEEPAGENTS_DOCKERFILE}" \
+  --build-arg "BASE_IMAGE=ghcr.io/nvidia/nemoclaw/langchain-deepagents-code-sandbox-base:${NEMOCLAW_VERSION}" \
   --build-arg "NEMOCLAW_MODEL=${MODEL}" \
-  --build-arg "NEMOCLAW_PRIMARY_MODEL_REF=inference/${MODEL}" \
   --build-arg "NEMOCLAW_INFERENCE_BASE_URL=https://inference.local/v1" \
   --build-arg "NEMOCLAW_INFERENCE_API=openai-completions" \
   --build-arg "NEMOCLAW_MANAGED_IMAGE_CAPABILITY_UNION=0" \
@@ -92,5 +98,5 @@ docker buildx build \
   --build-arg "NEMOCLAW_BUILD_ID=kubernetes-onprem-${NEMOCLAW_VERSION}" \
   "${SOURCE_DIR}"
 
-echo "Pushed deployment-specific NemoClaw sandbox image: ${SANDBOX_IMAGE}"
+echo "Pushed deployment-specific NemoClaw/Deep Agents Code sandbox image: ${SANDBOX_IMAGE}"
 echo "The image contains no inference API key. OpenShell receives that key separately."

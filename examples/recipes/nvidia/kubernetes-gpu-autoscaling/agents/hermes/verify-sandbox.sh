@@ -2,14 +2,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify an existing CPU-only NemoClaw sandbox can reach on-premises inference
+# Verify an existing CPU-only NemoClaw/Hermes sandbox can reach on-premises inference
 # through OpenShell's https://inference.local route (Envoy LeastRequest when enabled).
+# Mirrors ../openclaw/verify-sandbox.sh; substitutes Hermes's own version command and
+# health probe (agents/hermes/manifest.yaml) for OpenClaw's plugin-inspect check.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-# shellcheck source=../versions.env
+CHART_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=../../versions.env
 source "${CHART_DIR}/versions.env"
 
 fail() {
@@ -29,10 +31,10 @@ ACTUAL_OPENSHELL_VERSION="$(openshell --version 2>/dev/null | grep -oE '[0-9]+\.
 [[ "${ACTUAL_OPENSHELL_VERSION}" == "${OPENSHELL_VERSION}" ]] \
   || fail "OpenShell CLI ${OPENSHELL_VERSION} is required; found ${ACTUAL_OPENSHELL_VERSION:-unknown}"
 
-SANDBOX_NAME="${NEMOCLAW_SANDBOX_NAME:-nemoclaw-onprem}"
+SANDBOX_NAME="${HERMES_SANDBOX_NAME:-hermes-onprem}"
 MODEL="${INFERENCE_MODEL:-llama3.2:3b}"
-# openclaw plugins inspect can hang on a cold/busy gateway; keep it short.
-PLUGIN_TIMEOUT_SEC="${VERIFY_PLUGIN_TIMEOUT_SEC:-60}"
+# The health probe / version command can hang on a cold/busy gateway; keep it short.
+HEALTH_TIMEOUT_SEC="${VERIFY_HEALTH_TIMEOUT_SEC:-90}"
 CURL_TIMEOUT_SEC="${VERIFY_CURL_TIMEOUT_SEC:-120}"
 
 sandbox_exec() {
@@ -47,7 +49,7 @@ openshell status >/dev/null \
 
 log "Checking sandbox ${SANDBOX_NAME}..."
 openshell sandbox get "${SANDBOX_NAME}" >/dev/null 2>&1 \
-  || fail "sandbox ${SANDBOX_NAME} does not exist; run create-nemoclaw-sandbox.sh first"
+  || fail "sandbox ${SANDBOX_NAME} does not exist; run ./agents/hermes/create-sandbox.sh first"
 
 log "Checking sandbox policy does not allow NVIDIA-hosted inference..."
 EFFECTIVE_POLICY="$(openshell policy get "${SANDBOX_NAME}" --full -o json)"
@@ -56,12 +58,17 @@ if grep -Fq 'integrate.api.nvidia.com' <<<"${EFFECTIVE_POLICY}"; then
 fi
 unset EFFECTIVE_POLICY
 
-log "Inspecting nemoclaw plugin (timeout ${PLUGIN_TIMEOUT_SEC}s)..."
-if ! sandbox_exec "${PLUGIN_TIMEOUT_SEC}" \
-  openclaw plugins inspect nemoclaw --json >/dev/null; then
-  fail "openclaw plugins inspect nemoclaw timed out or failed after ${PLUGIN_TIMEOUT_SEC}s"
+log "Checking hermes --version (timeout ${HEALTH_TIMEOUT_SEC}s)..."
+if ! sandbox_exec "${HEALTH_TIMEOUT_SEC}" hermes --version >/dev/null; then
+  fail "hermes --version timed out or failed after ${HEALTH_TIMEOUT_SEC}s"
 fi
-log "Plugin inspect OK."
+log "hermes --version OK."
+
+log "GET http://localhost:8642/health (timeout ${HEALTH_TIMEOUT_SEC}s)..."
+if ! sandbox_exec "${HEALTH_TIMEOUT_SEC}" curl -fsS --max-time "${HEALTH_TIMEOUT_SEC}" http://localhost:8642/health >/dev/null; then
+  fail "Hermes health probe timed out or failed after ${HEALTH_TIMEOUT_SEC}s"
+fi
+log "Health probe OK."
 
 log "GET https://inference.local/v1/models (timeout ${CURL_TIMEOUT_SEC}s)..."
 MODELS_JSON="$(
@@ -92,4 +99,4 @@ print(content)' "${CHAT_JSON}"
 log "Answer: ${ANSWER}"
 
 echo "OK: sandbox ${SANDBOX_NAME} reached https://inference.local for models and chat/completions (${MODEL})."
-echo "Runtime (optional foreground): ./scripts/run-nemoclaw-sandbox.sh"
+echo "Runtime (optional foreground): ./agents/hermes/run-sandbox.sh"

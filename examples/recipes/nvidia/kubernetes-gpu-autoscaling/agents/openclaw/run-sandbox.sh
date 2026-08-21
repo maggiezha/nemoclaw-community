@@ -9,8 +9,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-# shellcheck source=../versions.env
+CHART_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=../../versions.env
 source "${CHART_DIR}/versions.env"
 
 fail() {
@@ -25,7 +25,7 @@ ACTUAL_OPENSHELL_VERSION="$(openshell --version 2>/dev/null | grep -oE '[0-9]+\.
 
 SANDBOX_NAME="${NEMOCLAW_SANDBOX_NAME:-nemoclaw-onprem}"
 openshell sandbox get "${SANDBOX_NAME}" >/dev/null 2>&1 \
-  || fail "sandbox ${SANDBOX_NAME} does not exist; run create-nemoclaw-sandbox.sh first"
+  || fail "sandbox ${SANDBOX_NAME} does not exist; run ./agents/openclaw/create-sandbox.sh first"
 
 echo "Starting NemoClaw/OpenClaw in ${SANDBOX_NAME}. Keep this terminal open."
 echo "OpenShell owns the pod sandbox; the NemoClaw entrypoint runs as the sandbox identity."
