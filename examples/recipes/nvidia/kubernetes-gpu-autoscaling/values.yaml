@@ -251,9 +251,14 @@ affinity: {}
 autoscaling:
   enabled: false
   minReplicas: 1
-  maxReplicas: 4
-  maxGpus: 4
-  # Scripts default maxReplicas/maxGpus to allocatable GPU count (N) unless MAX_REPLICAS is set.
+  # Chart-level fallback only (used when Helm is invoked directly, without the recipe
+  # scripts). Defaults to 8 GPUs (an 8×H100 node like dgx02) — override per cluster with
+  # `--set autoscaling.maxReplicas=N --set autoscaling.maxGpus=N`, or use the
+  # install-hpa.sh / hpa-reset.sh `MAX_REPLICAS` env var (and hpa-load-test.sh
+  # `TARGET_PODS`), which auto-detect and pass through your cluster's actual allocatable
+  # GPU count unless you set them explicitly.
+  maxReplicas: 8
+  maxGpus: 8
   # Built-in (live-validated): gpu_utilization | latency_avg.
   # Or wire a custom Adapter metric and extend nemoclaw-gpu.hpaMetric helpers.
   metric: gpu_utilization
