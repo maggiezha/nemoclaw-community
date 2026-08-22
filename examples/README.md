@@ -11,7 +11,7 @@ again by contributor provenance.
 | Example | Description |
 | --- | --- |
 | [Developer Community Chief of Staff](recipes/nvidia/developer-community-chief-of-staff/README.md) | Synthesizes Slack, Outlook, GitHub, and mirrored community signals into operating briefs, gaps, priorities, and follow-up recommendations. |
-| [Kubernetes GPU Autoscaling](recipes/nvidia/kubernetes-gpu-autoscaling/README.md) | Runs a CPU-only NemoClaw/OpenClaw sandbox through OpenShell on Kubernetes and autoscales authenticated, GPU-backed Ollama inference pods from DCGM utilization. |
+| [Kubernetes GPU Autoscaling](recipes/nvidia/kubernetes-gpu-autoscaling/README.md) | Runs a swappable CPU-only NemoClaw sandbox agent (OpenClaw, Hermes, or Deep Agents Code) through OpenShell on Kubernetes and autoscales authenticated, GPU-backed inference pods (Ollama, vLLM, or NVIDIA NIM) from GPU utilization or latency. |
 | [Memory-Driven Chief of Staff](recipes/nvidia/memory-driven-chief-of-staff/README.md) | Keeps a locally-authoritative, revisable record per inbound email and Slack message, re-judged on a schedule and re-ranked under fixed caps, without writing back to the source. |
 | [NV Tech Assistant](recipes/nvidia/nv-tech-assistant/README.md) | Answers NVIDIA technical questions with cited evidence from allowlisted NVIDIA, GitHub, and arXiv sources. |
 | [Payment Operations Hermes Assistant](recipes/nvidia/payment-ops-hermes/README.md) | Demonstrates constrained payment screening, evidence preparation, and a platform-enforced human release boundary. |

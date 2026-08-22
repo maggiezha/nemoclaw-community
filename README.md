@@ -14,7 +14,7 @@
 - [Governance And Maintainers](#governance-and-maintainers)
 - [License](#license)
 
-NemoClaw Community is a collection of examples that showcase NemoClaw blueprints for constrained, inspectable agent workflows.
+NemoClaw Community is a collection of examples showcasing NemoClaw blueprints for constrained, inspectable agent workflows.
 
 NemoClaw is the blueprint layer for composing three things into a repeatable agent system:
 
@@ -44,7 +44,7 @@ git clone https://github.com/NVIDIA/nemoclaw-community.git
 cd nemoclaw-community
 ```
 
-For examples maintained outside this repository, see [brevdev/nemoclaw-demos](https://github.com/brevdev/nemoclaw-demos). Each example documents its own host requirements, credentials, setup steps, and OpenShell policy details.
+Each example documents its own host requirements, credentials, setup steps, and OpenShell policy details.
 
 ## Requirements
 
@@ -53,7 +53,7 @@ For examples maintained outside this repository, see [brevdev/nemoclaw-demos](ht
 - Access to an OpenAI-compatible inference endpoint
 - Optional integration credentials for Slack, Microsoft Graph/Outlook, GitHub live reads, and source ETL mirrors
 
-This project will download and install additional third-party open source software projects. Review the license terms of these open source projects before use. See [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES) for the repository inventory.
+Running these examples may download and install additional third-party open source software. Review the license terms of that software before use. See [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES) for the repository inventory.
 
 ## Contributing
 
