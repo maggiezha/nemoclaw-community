@@ -719,26 +719,6 @@ sum by (pod) (
 
 After scale-up you should see multiple pod series. metrics-proxy `/metrics` scraping is on by default (`metrics.serviceMonitor.enabled: true`) after `install-hpa.sh`. If latency graphs stay empty while GPU util still moves, check `kubectl get servicemonitor -n nemoclaw-gpu` and re-run `install-hpa.sh` if the ServiceMonitor was disabled.
 
-## Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `try-it.sh` | Runs the whole Quick start end to end (incl. `hpa-load-test.sh`), `AGENT_NAME` / `INFERENCE_RUNTIME` at the top; requires explicit opt-in for the insecure-eval shortcut |
-| `install-hpa.sh` | Monitoring + chart + HPA (+ Envoy if enabled) |
-| `hpa-load-test.sh` / `hpa-reset.sh` | Autoscaling (+ Envoy) test / restore idle |
-| `cluster-recover.sh` | Destructive release recovery for the selected release only — see script comments before use |
-| `get-metrics-proxy-pods.sh` / `get-hpa.sh` / `hpa-watch.sh` | Inspect / watch |
-| `install-openshell-k8s.sh` | OpenShell gateway |
-| `build-agent-sandbox-image.sh` / `create-agent-sandbox.sh` / `verify-agent-sandbox.sh` / `run-agent-sandbox.sh` / `run-agent-prompt.sh` | Agent sandbox lifecycle — pick the agent (`openclaw`, `hermes`, or `deepagents`, mirroring [`NVIDIA/NemoClaw/agents`](https://github.com/NVIDIA/NemoClaw/tree/main/agents)) via a single `AGENT_NAME` flag; see [`AGENT-SELECTION.md`](AGENT-SELECTION.md) |
-| `agent-common.sh` | Per-agent config table sourced by the scripts above |
-| `test-*-contract.*` | Static / local contract checks |
-
-### Upgrade from pre-metrics-proxy releases
-
-Older chart revisions misnamed the GPU front door Deployment/Service/HPA/Gateway with a `…-agent` suffix (labels `component=agent` or `gpu-agent`). That object was **never** the OpenClaw/NemoClaw AI agent. Current revisions use `…-metrics-proxy` / `component=gpu-metrics-proxy` only.
-
-`install-hpa.sh`, `hpa-reset.sh`, and `hpa-load-test.sh` call `hpa_common_migrate_pre_metrics_proxy_resources` **before** Helm upgrade: they detect those historical leftovers (by old basename and label) and delete them—including orphaned keep-policy Secrets—so an upgrade cannot leave both workloads competing for GPUs. A fresh install of this head only creates `…-metrics-proxy` names.
-
 ## Uninstall
 
 Stop the running agent (`scripts/run-agent-sandbox.sh` for OpenClaw/Hermes; Deep Agents Code exits after each `run-agent-prompt.sh` call — nothing to stop). With OpenShell port-forward still up (substitute your agent's sandbox/provider name — `nemoclaw-onprem`/`onprem-ollama` for OpenClaw, `hermes-onprem`/`onprem-hermes` for Hermes, `deepagents-onprem`/`onprem-deepagents` for Deep Agents Code):
